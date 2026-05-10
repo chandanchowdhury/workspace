@@ -8,6 +8,7 @@ import { logToFile } from './logger';
 
 export interface WorkspaceConfig {
   clientId: string;
+  clientSecret: string;
   cloudFunctionUrl: string;
 }
 
@@ -15,6 +16,7 @@ const DEFAULT_CONFIG: WorkspaceConfig = {
   clientId:
     '338689075775-o75k922vn5fdl18qergr96rp8g63e4d7.apps.googleusercontent.com',
   cloudFunctionUrl: 'https://google-workspace-extension.geminicli.com',
+  clientSecret: '',
 };
 
 /**
@@ -27,6 +29,7 @@ export function loadConfig(): WorkspaceConfig {
     cloudFunctionUrl:
       process.env['WORKSPACE_CLOUD_FUNCTION_URL'] ||
       DEFAULT_CONFIG.cloudFunctionUrl,
+    clientSecret: process.env['WORKSPACE_CLIENT_SECRET'] || DEFAULT_CONFIG.clientSecret,
   };
 
   const maskedClientId =
@@ -34,7 +37,7 @@ export function loadConfig(): WorkspaceConfig {
       ? `...${config.clientId.slice(-2)}`
       : config.clientId;
   logToFile(
-    `Loaded config: clientId=${maskedClientId}, cloudFunctionUrl=${config.cloudFunctionUrl}`,
+    `Loaded config: clientId=${maskedClientId}, cloudFunctionUrl=${config.cloudFunctionUrl}, localAuth=${!!config.clientSecret}`,
   );
   return config;
 }

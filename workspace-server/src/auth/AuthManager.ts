@@ -17,6 +17,7 @@ import { loadConfig } from '../utils/config';
 
 const config = loadConfig();
 const CLIENT_ID = config.clientId;
+const CLIENT_SECRET = config.clientSecret;
 const CLOUD_FUNCTION_URL = config.cloudFunctionUrl;
 const TOKEN_EXPIRY_BUFFER_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -123,6 +124,7 @@ export class AuthManager {
     // Note: No clientSecret is provided here. The secret is only known by the cloud function.
     const options: Auth.OAuth2ClientOptions = {
       clientId: CLIENT_ID,
+      ...(CLIENT_SECRET && { clientSecret: CLIENT_SECRET }),
     };
     const oAuth2Client = new google.auth.OAuth2(options);
 
@@ -231,39 +233,50 @@ export class AuthManager {
         throw new Error('No refresh token available');
       }
 
-      logToFile('Calling cloud function to refresh token...');
+      let mergedCredentials: Auth.Credentials;
 
-      // Call the cloud function refresh endpoint
-      // The cloud function has the client secret needed for token refresh
-      const response = await fetch(`${CLOUD_FUNCTION_URL}/refreshToken`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          refresh_token: currentCredentials.refresh_token,
-        }),
-      });
+      if (CLIENT_SECRET) {
+        logToFile('Refreshing token locally using client secret...');
+        const { credentials } = await this.client.refreshAccessToken();
+        mergedCredentials = {
+          ...credentials,
+          refresh_token: credentials.refresh_token || currentCredentials.refresh_token,
+        };
+      } else {
+        logToFile('Refreshing token via cloud function proxy...');
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(
-          `Token refresh failed: ${response.status} ${errorText}`,
-        );
+        // Call the cloud function refresh endpoint
+        // The cloud function has the client secret needed for token refresh
+        const response = await fetch(`${CLOUD_FUNCTION_URL}/refreshToken`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            refresh_token: currentCredentials.refresh_token,
+          }),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(
+            `Token refresh failed: ${response.status} ${errorText}`
+          );
+        }
+
+        const newTokens = await response.json();
+
+        // Merge new tokens with existing credentials, preserving refresh_token
+        // Note: Google does NOT return a new refresh_token on refresh
+        mergedCredentials = {
+          ...newTokens,
+          refresh_token: currentCredentials.refresh_token, // Always preserve original
+        };
       }
-
-      const newTokens = await response.json();
-
-      // Merge new tokens with existing credentials, preserving refresh_token
-      // Note: Google does NOT return a new refresh_token on refresh
-      const mergedCredentials = {
-        ...newTokens,
-        refresh_token: currentCredentials.refresh_token, // Always preserve original
-      };
 
       this.client.setCredentials(mergedCredentials);
       await OAuthCredentialStorage.saveCredentials(mergedCredentials);
-      logToFile('Token refreshed and saved successfully via cloud function');
+      logToFile('Token refreshed and saved successfully');
     } catch (error) {
       logToFile(`Error during token refresh: ${error}`);
       throw error;
@@ -324,11 +337,11 @@ export class AuthManager {
     };
     const state = Buffer.from(JSON.stringify(statePayload)).toString('base64');
 
-    // The redirect URI for Google's auth server is the cloud function
-    const cloudFunctionRedirectUri = CLOUD_FUNCTION_URL;
+    // Local exchange when client secret is available; fall back to cloud function proxy.
+    const redirectUri = CLIENT_SECRET ? localRedirectUri : CLOUD_FUNCTION_URL;
 
     const authUrl = client.generateAuthUrl({
-      redirect_uri: cloudFunctionRedirectUri, // Tell Google to go to the cloud function
+      redirect_uri: redirectUri,
       access_type: 'offline',
       scope: this.scopes,
       state: state, // Pass our JSON payload in the state
@@ -354,48 +367,59 @@ export class AuthManager {
 
           // SECURITY: Validate the state parameter to prevent CSRF attacks.
           const returnedState = qs.get('state');
-          if (returnedState !== csrfToken) {
+          let returnedCsrf: string | undefined;
+          try {
+            const decoded = JSON.parse(Buffer.from(returnedState || '', 'base64').toString());
+            returnedCsrf = decoded.csrf;
+          } catch {
+            // not parseable — fall through to mismatch
+          }
+          if (returnedCsrf !== csrfToken) {
             res.end('State mismatch. Possible CSRF attack.');
             reject(new Error('OAuth state mismatch. Possible CSRF attack.'));
             return;
           }
 
           if (qs.get('error')) {
-            const errorCode = qs.get('error');
-            const errorDescription =
-              qs.get('error_description') || 'No additional details provided';
             res.end();
-            reject(
-              new Error(
-                `Google OAuth error: ${errorCode}. ${errorDescription}`,
-              ),
-            );
+            reject(new Error(`Google OAuth error: ${qs.get('error')}. ${qs.get('error_description') || ''}`));
             return;
           }
 
-          const access_token = qs.get('access_token');
-          const refresh_token = qs.get('refresh_token');
-          const scope = qs.get('scope');
-          const token_type = qs.get('token_type');
-          const expiry_date_str = qs.get('expiry_date');
-
-          if (access_token && expiry_date_str) {
-            const tokens: Auth.Credentials = {
-              access_token: access_token,
-              refresh_token: refresh_token || null,
-              scope: scope || undefined,
-              token_type: (token_type as 'Bearer') || undefined,
-              expiry_date: parseInt(expiry_date_str, 10),
-            };
+          if (CLIENT_SECRET) {
+            // Local code exchange — client secret present, no proxy needed.
+            const code = qs.get('code');
+            if (!code) {
+              reject(new Error('Authentication failed: no authorization code in callback.'));
+              res.end('Authentication failed: missing code.');
+              return;
+            }
+            const { tokens } = await client.getToken({ code, redirect_uri: localRedirectUri });
             client.setCredentials(tokens);
             res.end('Authentication successful! Please return to the console.');
             resolve();
           } else {
-            reject(
-              new Error(
-                'Authentication failed: Did not receive tokens from callback.',
-              ),
-            );
+            // Cloud function proxy path — tokens are forwarded as query params.
+            const access_token = qs.get('access_token');
+            const expiry_date_str = qs.get('expiry_date');
+            if (access_token && expiry_date_str) {
+              const tokens: Auth.Credentials = {
+                access_token,
+                refresh_token: qs.get('refresh_token') || null,
+                scope: qs.get('scope') || undefined,
+                token_type: (qs.get('token_type') as 'Bearer') || undefined,
+                expiry_date: parseInt(expiry_date_str, 10),
+              };
+              client.setCredentials(tokens);
+              res.end('Authentication successful! Please return to the console.');
+              resolve();
+            } else {
+              reject(
+                new Error(
+                  'Authentication failed: did not receive tokens from callback.'
+                )
+              );
+            }
           }
         } catch (e) {
           reject(e);
