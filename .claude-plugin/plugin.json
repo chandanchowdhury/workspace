@@ -1,0 +1,12 @@
+{
+  "name": "google-workspace",
+  "version": "0.0.8",
+  "description": "Google Workspace MCP server — Docs, Drive, Sheets, Slides, Calendar, Chat, Gmail, People",
+  "author": {
+    "name": "Allen Hutchison",
+    "url": "https://github.com/gemini-cli-extensions/workspace"
+  },
+  "license": "Apache-2.0",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json"
+}

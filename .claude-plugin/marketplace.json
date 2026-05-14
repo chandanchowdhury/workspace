@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "gemini-cli-extensions",
+  "description": "Google plugin marketplace",
+  "repository": "https://github.com/gemini-cli-extensions",
+  "owner": {
+    "name": "gemini-cli-extensions Team"
+  },
+  "plugins": [
+    {
+      "name": "google-workspace",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}
