@@ -1,0 +1,14 @@
+{
+  "google-workspace": {
+    "command": "node",
+    "args": [
+      "${CLAUDE_PLUGIN_ROOT}/dist/index.js"
+    ],
+    "env": {
+      "WORKSPACE_CLIENT_ID": "",
+      "WORKSPACE_CLIENT_SECRET": "",
+      "OAUTH_CALLBACK_HOST": "127.0.0.1",
+      "OAUTH_CALLBACK_PORT": "54321"
+    }
+  }
+}
